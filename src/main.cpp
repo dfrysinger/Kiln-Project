@@ -29,8 +29,8 @@
 #define RightButtonPin         A4 //What pin is the rotary encoder button connected to
 #define LeftButtonPin          A5 //What pin is the push button connected to
 
-Debounce RightButton(RightButtonPin, 30);
-Debounce LeftButton(LeftButtonPin, 30);
+Debounce RightButton(RightButtonPin, 60);
+Debounce LeftButton(LeftButtonPin, 60);
 
 #define ROTCOUNT              24 // Number of detents in a single rotation of the knob
 
@@ -54,8 +54,11 @@ Adafruit_MAX31855 thermocouple(MAXCLK, MAXCS, MAXDO);
 static const unsigned long REFRESH_INTERVAL = 1000; // ms
 static unsigned long lastRefreshTime = 0;
 
-byte rightButtonState = 0;         // variable for reading the pushbutton status
-byte leftButtonState = 0;          // variable for reading the pushbutton status
+byte rightButtonState = HIGH;         // variable for reading the pushbutton status
+byte leftButtonState = HIGH;          // variable for reading the pushbutton status
+
+byte rightButtonStatePrevious = LOW;         // variable for storing the previous pushbutton status
+byte leftButtonStatePrevious = LOW;          // variable for storing the previouspushbutton status
 
 #define SCREEN_LINES 5 //Number of lines of text that will be displayed on the screen when listing items
 
@@ -75,7 +78,7 @@ int presetValues[NUM_CYCLES*VALUES_PER_CYCLE];
 byte presetsNamesCount = 1;
 byte presetValuesCount = 0;
 byte selectedPreset = 0;
-
+byte page = 0;
 byte highlight = 0;
 
 #define errorHalt(msg) {Serial.println(F(msg)); while(1); }
@@ -145,23 +148,32 @@ void loop() {
   //Serial.print("rightButtonState: ");
   //Serial.println(rightButtonState);
 
-  if (rightButtonState == LOW) {
+  if (rightButtonState == LOW && rightButtonStatePrevious == HIGH) {
     // turn LED on:
     //tft.fillScreen(ST77XX_RED);
-    selectedPreset = highlight;
-    //Serial.println("Right Button Pressed!");
+    selectedPreset = highlight + 1;
+    Serial.println("Right Button Pressed!");
+    drawScreen();
   }
+  rightButtonStatePrevious = rightButtonState;
 
   leftButtonState = LeftButton.read();
   //Serial.print("leftButtonState: ");
   //Serial.println(leftButtonState);
   
-  if (leftButtonState == LOW) {
+  if (leftButtonState == LOW && leftButtonStatePrevious == HIGH) {
     // turn LED on:
-    tft.fillScreen(ST77XX_GREEN);
-    //Serial.println("Left Button Pressed!");
+    //tft.fillScreen(ST77XX_GREEN);
+    if(page == 0){
+      selectedPreset = 0;
+    } else {
+      page--;
+    }
+    Serial.println("Left Button Pressed!");
+    drawScreen();
   }
-  
+  leftButtonStatePrevious = leftButtonState;
+
   if(millis() - lastRefreshTime >= REFRESH_INTERVAL) {
     lastRefreshTime += REFRESH_INTERVAL;
     drawTemp();
@@ -271,7 +283,7 @@ size_t readField(File* file, char presetsNames[][NAME_SIZE], char* name, int val
 void drawTemp() {
   tft.setTextColor(ST77XX_RED);
   //tft.setFont(&FreeSansBold9pt7b);
-  tft.setTextSize(1);
+  tft.setTextSize(2);
 
 //void fillRect(x0, y0, w, h, color);
   tft.fillRect(270, 0 , 60, 25, ST77XX_WHITE);
@@ -285,6 +297,7 @@ void drawTemp() {
 }
 
 void drawScreen() {
+  Serial.println("drawScreen!");
   int j = 0;
 
   tft.fillScreen(ST77XX_WHITE);
@@ -294,22 +307,27 @@ void drawScreen() {
   tft.setTextColor(ST77XX_BLACK);
   //tft.setFont(&FreeSansBold18pt7b);
   tft.setTextSize(4);
-  tft.setCursor(25, 47);
+  tft.setCursor(25, 17);
   
-  for(int i = 0; i < SCREEN_LINES; i++){
-    j = i-2+highlight;
-    if(j < 0){
-      j = presetsNamesCount+j;
-    } else {
-      j = j%presetsNamesCount;
+  if(selectedPreset == 0){
+    for(int i = 0; i < SCREEN_LINES; i++){
+      j = i-2+highlight;
+      if(j < 0){
+        j = presetsNamesCount+j;
+      } else {
+        j = j%presetsNamesCount;
+      }
+      tft.println(presetsNames[j]);
+      //tft.println(RightButton.read());
+      
+      tft.setCursor(25, tft.getCursorY());
     }
-    tft.println(presetsNames[j]);
-    //tft.println(RightButton.read());
-    
-    tft.setCursor(25, tft.getCursorY());
+    tft.fillTriangle(5, 85, 5, 105, 17, 95, ST77XX_BLACK);
+    delay(1);
+  } else {
+    tft.fillScreen(ST77XX_WHITE);
+    tft.println(presetsNames[selectedPreset-1]);
   }
-  tft.fillTriangle(5, 110, 5, 130, 17, 120, ST77XX_BLACK);
-  delay(1);
   //void fillTriangle(x0, y0, x1, y1, x2, y2, color);
 }
 
