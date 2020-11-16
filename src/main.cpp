@@ -286,13 +286,13 @@ void drawTemp() {
   tft.setTextSize(2);
 
 //void fillRect(x0, y0, w, h, color);
-  tft.fillRect(270, 0 , 60, 25, ST77XX_WHITE);
+  tft.fillRect(260, 0 , 60, 25, ST77XX_WHITE);
 
-  tft.setCursor(275, 20);
+  tft.setCursor(275, 5);
   double f = thermocouple.readFahrenheit();
   if (!isnan(f)) {
     tft.print(f, 0);
-    tft.println(" F");
+    tft.println("F");
   }
 }
 
