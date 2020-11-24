@@ -17,6 +17,19 @@
 #include <Rotary.h>
 #include <Debounce.h>
 
+/*********************************************
+
+TODO:
+- Fix the bug where tens place and degrees save on next/back for temp page but hundreds place doesnt
+- Create a RAMP screen with time editing UI
+- Create SOAK screen derived from RAMP screen
+- Get logic working to move forward and back through TEMP/RAMP/SOAK
+- Consider getting logic working to go oback through CYCLES too
+- Get NAME page UI built
+- Get saving full Preset to SD card working
+- Get SUMMARY page UI built (optional)
+
+**********************************************/
 // For the breakout board, you can use any 2 or 3 pins.
 // These pins will also work for the 1.8" TFT shield.
 #define TFT_CS        10
@@ -56,16 +69,16 @@ Adafruit_ST7789 tft = Adafruit_ST7789(TFT_CS, TFT_DC, TFT_RST);
 // initialize the Thermocouple
 Adafruit_MAX31855 thermocouple(MAXCLK, MAXCS, MAXDO);
 
-static const unsigned long REFRESH_INTERVAL = 1000; // ms
+#define REFRESH_INTERVAL 1000 // ms
 static unsigned long lastRefreshTime = 0;
 
 byte rightButtonState = HIGH;         // variable for reading the pushbutton status
 byte leftButtonState = HIGH;          // variable for reading the pushbutton status
 byte centerButtonState = HIGH;        // variable for reading the pushbutton status
 
-byte rightButtonStatePrevious = LOW;         // variable for storing the previous pushbutton status
-byte leftButtonStatePrevious = LOW;          // variable for storing the previous pushbutton status
-byte centerButtonStatePrevious = LOW;        // variable for storing the previous pushbutton status
+byte rightButtonStatePrevious = LOW;         // variable for storing the previous pushbutton status (important for debouncing as the button records tons of HIGH or LOW states per press and we just want the one where it first changes)
+byte leftButtonStatePrevious = LOW;          // variable for storing the previous pushbutton status (important for debouncing as the button records tons of HIGH or LOW states per press and we just want the one where it first changes)
+byte centerButtonStatePrevious = LOW;        // variable for storing the previous pushbutton status (important for debouncing as the button records tons of HIGH or LOW states per press and we just want the one where it first changes)
 
 #define SCREEN_LINES 5 //Number of lines of text that will be displayed on the screen when listing items
 
