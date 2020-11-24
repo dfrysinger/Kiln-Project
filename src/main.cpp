@@ -27,6 +27,7 @@ TODO:
 - Consider getting logic working to go oback through CYCLES too
 - Get NAME page UI built
 - Get saving full Preset to SD card working
+- Optimize draw space for home screen scrolling by making buttons mostly static
 - Get SUMMARY page UI built (optional)
 
 **********************************************/
