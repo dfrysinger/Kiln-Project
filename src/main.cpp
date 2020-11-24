@@ -20,8 +20,11 @@
 // For the breakout board, you can use any 2 or 3 pins.
 // These pins will also work for the 1.8" TFT shield.
 #define TFT_CS        10
-#define TFT_RST       -1 // Or set to -1 and connect to Arduino RESET pin
+#define TFT_RST       -1 //set to -1 as reset is built in for this TFT screen
 #define TFT_DC         9
+
+#define SCREEN_HEIGHT 240
+#define SCREEN_WIDTH 320
 
 //Define the SD Card chip select pin (SDCS)
 #define CS_PIN 4
@@ -77,7 +80,7 @@ File presetsFile;
 
 // Array for data.
 char presetsNames[NUM_PRESETS][NAME_SIZE];
-int presetValues[NUM_CYCLES*VALUES_PER_CYCLE];
+unsigned int presetValues[NUM_CYCLES*VALUES_PER_CYCLE] = {};  //unsigned int in arduino is 2 bytes so it can go from 0 to 65,535 (which is about 18 hours in seconods, or 1,92 hours in minutes)
 
 //PRESETS VALUES
 #define HOME 0
@@ -99,7 +102,8 @@ byte selectedPreset = HOME;       //Which preset is selected, none = HOME
 byte page = 0;                    //Which page are we on, only used for new/manual and editing
 byte element = 1;                 //Which page element are we editing, only used for new/manual and editing
 byte elementLimit = 0;            //How many elements are there on the page (helps us rotate through them circularly)
-byte cycle = 0;                   //What cycle are we creating/editing
+byte totalCycles = 0;             //How many cycles are we creating/editing
+byte currentCycle = 0;            //What cycle are we currently creating/editing
 byte rotValue = 1;                //The value the rotary encoder is currently on
 byte rotLimit = 0;                //The number of items the rotary encoder is choosing between (helps us rotate through them circularly)
 
@@ -108,13 +112,14 @@ byte rotLimit = 0;                //The number of items the rotary encoder is ch
 
 void refreshScreen();
 void changeScreen();
+void saveElement();
 void drawTemp();
 void rotate();
 void rotate();
 void readPresetsIntoArrays();
 size_t readField(File* file, char presetsNames[][NAME_SIZE], char* name, int values[], char* delim);
-char *rtrim(char *str, const char *seps);
-char *ltrim(char *str, const char *seps);
+void drawButtons(char* leftButton, char* rightButton);
+word ConvertRGB( byte R, byte G, byte B);
 
 void setup(void) {
   // initialize GDB stub
@@ -143,14 +148,13 @@ void setup(void) {
   pinMode(CenterButtonPin, INPUT);
   analogWrite(CenterButtonPin, 255);
 
-  tft.init(240, 320);           // Init ST7789 320x240
+  tft.init(SCREEN_HEIGHT, SCREEN_WIDTH);           // Init ST7789 320x240
   tft.setRotation(3);
 
-  Serial.println(F("Initialized"));
+  //Serial.println(F("Initialized"));
 
   tft.setTextWrap(false);
   tft.fillScreen(ST77XX_WHITE);
-  tft.setTextColor(ST77XX_BLACK);
 
   
   // tft print function!
@@ -176,15 +180,50 @@ void loop() {
   //Serial.println(rightButtonState);
 
   if (rightButtonState == LOW && rightButtonStatePrevious == HIGH) {
+    // Serial.println("Right button pressed!");
+    // Serial.print("selectedPreset: ");
+    // Serial.println(selectedPreset);
+    // Serial.print("Page: ");
+    // Serial.println(page);
+    saveElement();
     switch (selectedPreset) {
       case HOME:
         selectedPreset = rotValue;
         break;
       case NEW_MANUAL:
-        page++;
+        switch (page) {
+          case CHOOSE:
+            if(rotValue == 1){
+              page = CYCLES;
+            } else {
+              page = MANUAL;
+            }
+            break;
+          case CYCLES:
+            totalCycles = rotValue;
+            currentCycle = 1;
+            // Serial.print("Saving totalCycles: ");
+            // Serial.println(totalCycles);
+            page = TEMP;
+            break;
+          case SOAK:
+            if(totalCycles > 1 && totalCycles > currentCycle){
+              page = TEMP;
+              currentCycle++;
+            } else {
+              page = SUMMARY;
+            }
+            break;
+          case MANUAL:
+            //run kiln
+            break;
+          default:
+            page++;
+        }
         //need some logic here to run through cycles
+        break;
     }
-    Serial.println("Right Button Pressed!");
+    //Serial.println("Right Button Pressed!");
     changeScreen();
   }
   rightButtonStatePrevious = rightButtonState;
@@ -194,12 +233,32 @@ void loop() {
   //Serial.println(leftButtonState);
   
   if (leftButtonState == LOW && leftButtonStatePrevious == HIGH) {
+    saveElement();
     if(page == 0){
-      selectedPreset = 0;
+      selectedPreset = HOME;
     } else {
-      page--;
+      switch (selectedPreset) {
+        case NEW_MANUAL:
+          switch (page) {
+            case CYCLES:
+              page = CHOOSE;
+              break;
+            case TEMP:
+              if(currentCycle > 1){
+                page = SOAK;
+                currentCycle--;
+              } else {
+                page = CYCLES;
+              }
+              break;
+            default:
+              page--;
+          }
+          //need some logic here to run through cycles
+          break;
+      }
     }
-    Serial.println("Left Button Pressed!");
+    //Serial.println("Left Button Pressed!");
     changeScreen();
   }
   leftButtonStatePrevious = leftButtonState;
@@ -212,22 +271,127 @@ void loop() {
     // turn LED on:
     //tft.fillScreen(ST77XX_GREEN);
     if(page > 0 && selectedPreset > 0 && elementLimit > 0){
+          
+      //TODO: save value before refreshing screen
+      saveElement();
       element++;
       if(element > 0) {
         element = element%elementLimit;        //if element is positive, change it to modulous of elementLimit so it doesnt go higher than elementLimit
       }
-      if(element == 0){                        //If current element goes below zero
+      if(element == 0){                        //If current element drops to zero (which is considered undefined for us)
         element = elementLimit+element;        //add the elementLimit to allow element to loop back to the end
       }
     }
-    Serial.println("Center Button Pressed!");
-    changeScreen();
+    //Serial.println("Center Button Pressed!");
+    //TODO: save value before refreshing screen (probably belongs above)
+    refreshScreen();
   }
   centerButtonStatePrevious = centerButtonState;
 
   if(millis() - lastRefreshTime >= REFRESH_INTERVAL) {
     lastRefreshTime += REFRESH_INTERVAL;
     drawTemp();
+  }
+}
+
+void saveElement(){
+  //[0,1,2,3,4,5,6,7,8]
+  //(currentCycle-1)*3 is starting point of this cycle
+  //
+  int i = (currentCycle-1)*VALUES_PER_CYCLE;
+  unsigned int tmp = 0;
+  switch(page){
+    case TEMP:
+      switch(element){
+        case 1:
+          // Serial.print("Hunds Rot value:");
+          // Serial.println(rotValue-1);
+          // Serial.print("Previous array value:");
+          // Serial.println(presetValues[i]);
+          // Serial.print("Previous element value:");
+          // Serial.println(presetValues[i]/100);
+          tmp = ((rotValue-1)*100)+((presetValues[i]>>1)%100);  //Sub 1 from rotVal to get the actual number, then multiply by 100 because this element is the hundreds place, then shift values ribght to push off the degree flag and modulous by 100 to get the tens place digits.
+          tmp = tmp << 1;                                       //shift tmp left by one to leave room for the degree flag (C=1 or F=0)
+          presetValues[i] = presetValues[i] & 1;                //clear all the bits in this value except the first (degree flag) as we dont want to lose it
+          presetValues[i] = presetValues[i] | tmp;              //save the bit shifted tmp into this value (it will not replace the degree flag)
+          rotValue = ((presetValues[i]>>1)%100)+1;              //set the rotVal to the tens place value since the user might have hit the center button to move to the next element (tens)
+          // Serial.print("Hunds Saved value:");
+          // Serial.println(presetValues[i]>>1);
+          // Serial.print("New value:");
+          // Serial.println(rotValue);
+          break;
+        case 2:
+          // Serial.print("Rot:");
+          // Serial.println(rotValue-1);
+          // Serial.print("Previous array value:");
+          // Serial.println(presetValues[i]);
+          // Serial.print("Old:");
+          // Serial.println(presetValues[i]>>1);
+          // Serial.print("Previous element value:");
+          // Serial.println((presetValues[i]>>1)%100);
+          tmp = ((int)((presetValues[i]>>1)/100)*100)+rotValue-1;
+          // Serial.print("New:");
+          // Serial.println(tmp);
+          // Serial.print("New value in binary:");
+          // Serial.println(tmp, BIN);
+          tmp = tmp << 1;
+          // Serial.print("Shifted new value in binary:");
+          // Serial.println(tmp, BIN);
+          // Serial.print("OldB:");
+          // Serial.println(presetValues[i], BIN);
+          presetValues[i] = presetValues[i] & 1;
+          // Serial.print("T:");
+          // Serial.println(presetValues[i], BIN);
+          presetValues[i] = presetValues[i] | tmp;
+          // Serial.print("NewB:");
+          // Serial.println(presetValues[i], BIN);
+          // Serial.print("NewA:");
+          // Serial.println(presetValues[i]>>1);
+          rotValue = (presetValues[i] & 1)+1;
+          // Serial.print("Saved value:");
+          // Serial.println(presetValues[i]);
+          // Serial.print("Next rot value:");
+          // Serial.println(rotValue);
+          break;
+        case 3:
+          Serial.print("Temp Rot value:");
+          Serial.println(rotValue-1);
+          // Serial.print("Previous array value:");
+          // Serial.println(presetValues[i+1]);
+          //Serial.println(~1, BIN);
+          //Serial.println(presetValues[i], BIN);
+          presetValues[i] = presetValues[i] & ~1;           //Clear only the degree flag by and'ing with the binary invert (~) of 1
+          presetValues[i] = presetValues[i] | (rotValue-1); //Save the degree flag to the first bit of the current value
+          //Serial.println(presetValues[i], BIN);
+          rotValue = ((presetValues[i]>>1)/100)+1;
+          // Serial.print("Saved value:");
+          // Serial.println(presetValues[i+1]);
+          // Serial.print("New value:");
+          // Serial.println(rotValue);
+          break;
+      }
+    case RAMP:
+      i = i+2;
+      switch(element){
+        case 1:
+          presetValues[i] = (rotValue*60)+(presetValues[i]%60);
+          break;
+        case 2:
+          presetValues[i] = (presetValues[i]/60)+rotValue;
+          break;
+      }
+      break;
+    case SOAK:
+      i = i+3;
+      switch(element){
+        case 1:
+          presetValues[i] = (rotValue*60)+(presetValues[i]%60);
+          break;
+        case 2:
+          presetValues[i] = (presetValues[i]/60)+rotValue;
+          break;
+      }
+      break;
   }
 }
 
@@ -239,14 +403,14 @@ void readPresetsIntoArrays() {
     errorHalt("open failed");
   }
 
-  presetsNamesCount = readField(&presetsFile, presetsNames, NULL, NULL, ",\n");
-  Serial.print("Name Size:");
-  Serial.println(presetsNamesCount);
+  presetsNamesCount = readField(&presetsFile, presetsNames, NULL, NULL, (char*)",\n");
+  // Serial.print("Name Size:");
+  // Serial.println(presetsNamesCount);
 
-  for (int i = 0; i < presetsNamesCount; i++) {
-    Serial.print("Name: ");
-    Serial.println(presetsNames[i]);
-  }
+  // for (int i = 0; i < presetsNamesCount; i++) {
+  //   Serial.print("Name: ");
+  //   Serial.println(presetsNames[i]);
+  // }
   
   // presetValuesCount = readField(&presetsFile, NULL, "Melt Aluminium", presetValues, ",\n");
   // Serial.print("Values Size:");
@@ -332,32 +496,57 @@ size_t readField(File* file, char presetsNames[][NAME_SIZE], char* name, int val
   return max(line, j);                                //return size of the built array
 }
 
+
 void changeScreen(){
   rotValue = 1;
   element = 1;
   elementLimit = 0;
+  int static_digits = 0;
   tft.fillScreen(ST77XX_WHITE);
+  tft.setTextColor(ST77XX_BLACK);
   switch (selectedPreset) {
     case HOME:
       rotLimit = presetsNamesCount;
       tft.fillTriangle(5, 85, 5, 105, 17, 95, ST77XX_BLACK);
       //draw buttons
+      //drawButtons((char*)"Edit", (char*)"Run");
       break;
     case NEW_MANUAL:
       switch (page) {
         case CHOOSE:
+          rotLimit = 2;
           tft.setTextSize(4);
           tft.setCursor(25, 47);
           tft.println("New Routine");
           tft.setCursor(25, tft.getCursorY()+25);
           tft.println("Manual Temp");
-          rotLimit = 2;
+          drawButtons((char*)"Back", (char*)"Next");
           break;
-        case MANUAL:
+        case TEMP:
+          elementLimit = 3;
+          // Serial.print("On temp page:");
+          // Serial.println(page);
+          // Serial.print("element:");
+          // Serial.println(element);
           tft.setTextSize(4);
           tft.setCursor(25, 27);
           tft.println("What temp?");
-        case TEMP:
+          tft.setTextSize(5);
+          tft.setCursor(65, 120);
+          tft.print("  ");
+          static_digits = (presetValues[(currentCycle-1)*VALUES_PER_CYCLE]>>1)%100;
+          if(static_digits < 10){
+            tft.print("0");
+          }
+          tft.print(static_digits);
+          if((presetValues[((currentCycle-1)*VALUES_PER_CYCLE)] & 1)+1 == 2){
+            tft.println(" C");
+          } else {
+            tft.println(" F");
+          }
+          drawButtons((char*)"Back", (char*)"Next");
+          break;
+        case MANUAL:
           elementLimit = 3;
           switch (element){
             case 3:
@@ -367,19 +556,30 @@ void changeScreen(){
               rotLimit = 100;
               break;
           }
+          tft.setTextSize(4);
+          tft.setCursor(25, 27);
+          tft.println("What temp?");
+          tft.setTextSize(5);
+          tft.setCursor(65, 120);
+          tft.print("  ");
+          tft.print("00");
+          tft.println(" F");
+          drawButtons((char*)"Back", (char*)"Run");
           break;
         case CYCLES:
+          rotLimit = NUM_CYCLES;
+          tft.fillTriangle(255, 85, 255, 105, 267, 95, ST77XX_BLACK);
           tft.setTextSize(4);
           tft.setCursor(25, 27);
           tft.println("How many\n ramp/soak\n cycles?");
-          rotLimit = NUM_CYCLES;
+          drawButtons((char*)"Back", (char*)"Next");
           break;
         case RAMP:
         case SOAK:
           rotLimit = 60;
           break;
         case SUMMARY:
-          rotLimit = cycle;
+          rotLimit = totalCycles;
           break;
         case NAME:
           rotLimit = 26;
@@ -390,6 +590,35 @@ void changeScreen(){
       break;
   }
   refreshScreen();
+}
+
+#define BUTTON_HEIGHT 50
+#define BUTTON_MARGIN 12
+#define CHAR_WIDTH 24
+#define LETTER_SPACING 4
+
+void drawButtons(char* leftButton, char* rightButton){
+  tft.setTextSize(4);
+  tft.setTextColor(ST77XX_WHITE);
+  if(leftButton != NULL){
+    tft.fillRect(0, SCREEN_HEIGHT-BUTTON_HEIGHT, SCREEN_WIDTH/2, BUTTON_HEIGHT, ConvertRGB( 255, 92, 0));
+    tft.setCursor(BUTTON_MARGIN, SCREEN_HEIGHT-BUTTON_HEIGHT+BUTTON_MARGIN);
+    tft.println(leftButton);
+  } else {
+    tft.fillRect(0, SCREEN_HEIGHT-BUTTON_HEIGHT, SCREEN_WIDTH/2, BUTTON_HEIGHT, ST77XX_WHITE);
+  }
+  //button width is the lenth of string times char width plus left and right margins and minus the letter spacing on the last letter
+  int buttonWidth = (CHAR_WIDTH*strlen(rightButton))+(2*BUTTON_MARGIN)-LETTER_SPACING;
+  //Serial.println(buttonWidth);
+  if(buttonWidth > (SCREEN_WIDTH/2)){
+    tft.fillRect(SCREEN_WIDTH-buttonWidth, SCREEN_HEIGHT-BUTTON_HEIGHT, buttonWidth, BUTTON_HEIGHT, ConvertRGB( 43, 160, 13));
+  } else {
+    tft.fillRect(SCREEN_WIDTH/2, SCREEN_HEIGHT-BUTTON_HEIGHT, SCREEN_WIDTH/2, BUTTON_HEIGHT, ConvertRGB( 43, 160, 13));
+  }
+  //Serial.println(strlen(rightButton));
+  tft.setCursor(SCREEN_WIDTH-BUTTON_MARGIN+LETTER_SPACING-(CHAR_WIDTH*strlen(rightButton)), SCREEN_HEIGHT-BUTTON_HEIGHT+BUTTON_MARGIN);
+  tft.println(rightButton);
+  tft.setTextColor(ST77XX_BLACK);
 }
 
 void drawTemp() {
@@ -408,19 +637,20 @@ void drawTemp() {
   }
 }
 
-void printCenteredDialText(char strings[][NAME_SIZE], byte length, byte padding) {
+void printCenteredDialText(char strings[][NAME_SIZE], byte length, int padding) {
   int j = 0;
-  for(int i = 0; i < SCREEN_LINES; i++){
-    j = i-2+rotValue-1;
+  for(int i = SCREEN_LINES; i > 0; i--){
+    j = i-3+(rotValue-1);
     if(j < 0){
       j = length+j;
     } else {
       j = j%length;
     }
     if(strings != NULL){
+      //tft.println(i);
       tft.println(strings[j]);
     } else {
-      tft.println(j);
+      tft.println(j+1);
     }
     tft.setCursor(padding, tft.getCursorY());
   }
@@ -428,15 +658,19 @@ void printCenteredDialText(char strings[][NAME_SIZE], byte length, byte padding)
 
 void refreshScreen() {
   //Serial.println("drawScreen!");
-  
   //tft.setFont(&FreeSansBold18pt7b);
   switch(selectedPreset){
     case HOME:
       //void fillRect(x0, y0, w, h, color);
-      tft.fillRect(25, 17, 320-25, 240-17-50, ST77XX_WHITE);
+      tft.fillRect(25, 17, SCREEN_WIDTH-25, SCREEN_HEIGHT-17-50, ST77XX_WHITE);
       tft.setTextSize(4);
       tft.setCursor(25, 17);
       printCenteredDialText(presetsNames, presetsNamesCount, 25);
+      if(rotValue == 1){
+        drawButtons(NULL, (char*)"New/Manual");
+      } else {
+        drawButtons((char*)"Edit", (char*)"Run");
+      }
       //delay(1);
       break;
     case NEW_MANUAL:
@@ -451,55 +685,61 @@ void refreshScreen() {
             tft.fillTriangle(5, 52, 5, 72, 17, 62, ST77XX_BLACK);
           }
           break;
-        case MANUAL:
+        case TEMP:
           tft.setTextSize(5);
           tft.setCursor(65, 120);
           switch (element){
             case 1:
+              rotLimit = 100;
               tft.fillRect(65, 120, 55, 35, ST77XX_YELLOW);
-              if(rotValue < 11){
+              if(rotValue-1 < 10){
                 tft.print(" ");
               }
               tft.print(rotValue-1);
-              tft.print("00");
-              tft.println(" F");
               //void fillRect(x0, y0, w, h, color);
               tft.fillRect(65, 170, 55, 4, ST77XX_BLACK);
-              tft.fillRect(125, 170, 55, 4, ST77XX_YELLOW);
-              tft.fillRect(185, 170, 55, 4, ST77XX_YELLOW);
-
+              tft.fillRect(125, 170, 55, 4, ConvertRGB( 197, 197, 197));
+              tft.fillRect(185, 170, 55, 4, ConvertRGB( 197, 197, 197));
               break;
             case 2:
+              rotLimit = 100;
               tft.fillRect(125, 120, 55, 35, ST77XX_YELLOW);
-              tft.print(" 1");
-              if(rotValue < 11){
+              tft.print("  ");
+              if(rotValue-1 < 10){
                 tft.print("0");
               }
               tft.print(rotValue-1);
-              tft.println(" F");
-              tft.fillRect(65, 170, 55, 4, ST77XX_YELLOW);
+              tft.fillRect(65, 170, 55, 4, ConvertRGB( 197, 197, 197));
               tft.fillRect(125, 170, 55, 4, ST77XX_BLACK);
-              tft.fillRect(185, 170, 55, 4, ST77XX_YELLOW);
+              tft.fillRect(185, 170, 55, 4, ConvertRGB( 197, 197, 197));
               break;
             case 3:
+              rotLimit = 2;
               tft.fillRect(185, 120, 55, 35, ST77XX_YELLOW);
-              tft.print(" 1");
-              tft.print("00");
-              if(rotValue%2){
-                tft.println(" F");
-              } else {
+              tft.print("    ");  //TODO: consider using setCursor instead of space strings to save memory
+              // Serial.print("rotValue:");
+              // Serial.println(rotValue);
+              // Serial.print("rotLimit:");
+              // Serial.println(rotLimit);
+              if(rotValue == 2){
                 tft.println(" C");
+              } else {
+                tft.println(" F");
               }
-              tft.fillRect(65, 170, 55, 4, ST77XX_YELLOW);
-              tft.fillRect(125, 170, 55, 4, ST77XX_YELLOW);
+              tft.fillRect(65, 170, 55, 4, ConvertRGB( 197, 197, 197));
+              tft.fillRect(125, 170, 55, 4, ConvertRGB( 197, 197, 197));
               tft.fillRect(185, 170, 55, 4, ST77XX_BLACK);
               break;
-          tft.print("00");
-          tft.println(" F");
           }
-
           break;
         case CYCLES:
+          //void fillRect(x0, y0, w, h, color);
+          tft.fillRect(275, 17, SCREEN_WIDTH-185, SCREEN_HEIGHT-17-50, ST77XX_WHITE);
+          tft.setTextSize(4);
+          tft.setCursor(275, 17);
+          printCenteredDialText(NULL, NUM_CYCLES, 275);
+          //delay(1);
+          break;
         default:
           break;
       }
@@ -518,7 +758,7 @@ void rotate() {
   unsigned char result = rotary.process();
 
   if (result == DIR_CCW) {
-    Serial.println("Counter-clockwise!");
+    //Serial.println("Counter-clockwise!");
     rotValue++;
 
     if(rotValue > 0) {
@@ -535,7 +775,7 @@ void rotate() {
     refreshScreen();
 
   } else if (result == DIR_CW) {
-    Serial.println("Clockwise!");
+    //Serial.println("Clockwise!");
     rotValue--;
 
     if(rotValue > 0) {
@@ -555,4 +795,9 @@ void rotate() {
   //COMMON CODE WOULD NEED TO BE NESTED IN AN IF STATEMENT THAT CHECKS FOR EITHER ROTATION
   //Serial.print(rotValue);
   //refreshScreen();
+}
+
+word ConvertRGB( byte R, byte G, byte B)
+{
+  return ( ((R & 0xF8) << 8) | ((G & 0xFC) << 3) | (B >> 3) );
 }
