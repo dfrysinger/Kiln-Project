@@ -354,8 +354,8 @@ void saveElement(){
           // Serial.println(rotValue);
           break;
         case 3:
-          Serial.print("Temp Rot value:");
-          Serial.println(rotValue-1);
+          // Serial.print("Temp Rot value:");
+          // Serial.println(rotValue-1);
           // Serial.print("Previous array value:");
           // Serial.println(presetValues[i+1]);
           //Serial.println(~1, BIN);
@@ -691,7 +691,7 @@ void refreshScreen() {
           switch (element){
             case 1:
               rotLimit = 100;
-              tft.fillRect(65, 120, 55, 35, ST77XX_YELLOW);
+              tft.fillRect(65, 120, 55, 35, ST77XX_WHITE);
               if(rotValue-1 < 10){
                 tft.print(" ");
               }
@@ -703,7 +703,7 @@ void refreshScreen() {
               break;
             case 2:
               rotLimit = 100;
-              tft.fillRect(125, 120, 55, 35, ST77XX_YELLOW);
+              tft.fillRect(125, 120, 55, 35, ST77XX_WHITE);
               tft.print("  ");
               if(rotValue-1 < 10){
                 tft.print("0");
@@ -715,7 +715,7 @@ void refreshScreen() {
               break;
             case 3:
               rotLimit = 2;
-              tft.fillRect(185, 120, 55, 35, ST77XX_YELLOW);
+              tft.fillRect(185, 120, 55, 35, ST77XX_WHITE);
               tft.print("    ");  //TODO: consider using setCursor instead of space strings to save memory
               // Serial.print("rotValue:");
               // Serial.println(rotValue);
