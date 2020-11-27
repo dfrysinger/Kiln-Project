@@ -26,7 +26,7 @@ TODO:
 - DONE Get logic working to move forward and back through TEMP/RAMP/SOAK
 - Add a "clear unused cycles in values array" function after the user hits next on the summary screen
 - DONE Get NAME page UI built
-- Save name into temp variiable
+- DONE Save name into temp variiable
 - Get saving full Preset to SD card working
 - Optimize draw space for home screen scrolling by making buttons mostly static
 - DONE Get SUMMARY page UI built (optional)
@@ -84,7 +84,8 @@ byte rightButtonStatePrevious = LOW;         // variable for storing the previou
 byte leftButtonStatePrevious = LOW;          // variable for storing the previous pushbutton status (important for debouncing as the button records tons of HIGH or LOW states per press and we just want the one where it first changes)
 byte centerButtonStatePrevious = LOW;        // variable for storing the previous pushbutton status (important for debouncing as the button records tons of HIGH or LOW states per press and we just want the one where it first changes)
 
-#define SCREEN_LINES 5 //Number of lines of text that will be displayed on the screen when listing items
+#define SCREEN_LINES_4 5 //Number of lines of text that will be displayed on the screen when listing items
+#define SCREEN_LINES_3 6 //Number of lines of text that will be displayed on the screen when listing items
 
 // Define the limits of the presets
 #define NUM_PRESETS 10
@@ -104,7 +105,7 @@ unsigned int presetValues[NUM_CYCLES*VALUES_PER_CYCLE] = {};  //unsigned int in 
 #define HOME 0
 #define NEW_MANUAL 1
 
-//PAGES VALUES
+//PAGES VALUES FOR NEW/MANUAL
 #define CHOOSE 0
 #define MANUAL 1
 #define CYCLES 2
@@ -113,6 +114,16 @@ unsigned int presetValues[NUM_CYCLES*VALUES_PER_CYCLE] = {};  //unsigned int in 
 #define SOAK 5
 #define SUMMARY 6
 #define NAME 7
+#define CONFIRM 8
+
+//PAGES VALUES FOR PRESETS
+#define RUN_SUMMARY 0
+#define RUN 1
+#define EDIT 2
+
+#define DEFAULT_CHAR 1   //This is the char to start the user on when enttering a name. 1 is ' '  and 34 is 'A'
+#define ASCII_OFFSET 32  //This is the ascii value of the first character we want to allow 32 is ' ' and the first visible char in the chart. This means a user has to scroll through a lot of synbols before arriving at an alpha character. Might be good to eventually change this to something like 65 ('A'). This will remove nearly all special chars but make it easier to enter alpha chars. 
+#define ASCII_LIMIT 94   //This is the max value of rotValue for chars, and also the total characters after offset that we want to allow. There are 94 chars after 32 in the ascii chart so it is set to 94, but if the offset is changed this would need to be changed to something smaller so we dont overflow the ascii values.
 
 char newName[NAME_STRING_SIZE] = "";   //this is a temp char array used to store a new preset name
 byte presetsNamesCount = 1;       //Number of presets found in the SD card plus 1 for new/manual
@@ -121,25 +132,30 @@ byte selectedPreset = HOME;       //Which preset is selected, none = HOME
 byte page = 0;                    //Which page are we on, only used for new/manual and editing
 byte element = 1;                 //Which page element are we editing, only used for new/manual and editing
 byte elementLimit = 1;            //How many elements are there on the page (helps us rotate through them circularly)
-byte totalCycles = 1;             //How many cycles are we creating/editing
+byte totalCycles = 0;             //How many cycles are we creating/editing
 byte currentCycle = 1;            //What cycle are we currently creating/editing
 byte rotValue = 1;                //The value the rotary encoder is currently on
 byte rotLimit = 1;                //The number of items the rotary encoder is choosing between (helps us rotate through them circularly)
 char* back = (char*)"Back";
 char* next = (char*)"Next";
 char* edit = (char*)"Edit";
+char* run = (char*)"Run";
 
 #define errorHalt(msg) {Serial.println(F(msg)); while(1); }
 //#define errorHalt(msg) {while(1); }
 
 void refreshScreen();
-void changeScreen();
+
+void clearPresetValues();
 void saveElement();
 void drawTemp();
 void rotate();
 void rotate();
+void writePresetToFile();
 void readPresetsIntoArrays();
-size_t readField(File* file, char presetsNames[][NAME_STRING_SIZE], char* name, int values[], char* delim);
+size_t readField(File* file, char presetsNames[][NAME_STRING_SIZE], char* name, unsigned int values[], char* delim);
+void changeScreen();
+void drawSummary(int start = 0);
 void drawTimeScreen(char* title, int currentValue, char* leftButton, char* rightButton);
 void drawTempScreen(char* leftButton, char* rightButton);
 void drawButtons(char* leftButton, char* rightButton);
@@ -204,11 +220,11 @@ void loop() {
   //Serial.println(rightButtonState);
 
   if (rightButtonState == LOW && rightButtonStatePrevious == HIGH) {
-    // Serial.println("Right button pressed!");
-    // Serial.print("selectedPreset: ");
-    // Serial.println(selectedPreset);
-    // Serial.print("Page: ");
-    // Serial.println(page);
+    Serial.println("Right button pressed!");
+    Serial.print("selectedPreset: ");
+    Serial.println(selectedPreset);
+    Serial.print("Page: ");
+    Serial.println(page);
     saveElement();
     switch (selectedPreset) {
       case HOME:
@@ -239,10 +255,19 @@ void loop() {
           case MANUAL:
             //run kiln
             break;
+          case NAME:
+            writePresetToFile();
+            clearPresetValues();
+            readPresetsIntoArrays();
+            page = CHOOSE;
+            selectedPreset = HOME;
+            break;
           default:
             page++;
         }
         //need some logic here to run through cycles
+        break;
+      default:
         break;
     }
     //Serial.println("Right Button Pressed!");
@@ -257,12 +282,14 @@ void loop() {
   if (leftButtonState == LOW && leftButtonStatePrevious == HIGH) {
     saveElement();
     if(page == 0){
+      rotValue = selectedPreset;
       selectedPreset = HOME;
     } else {
       switch (selectedPreset) {
         case NEW_MANUAL:
           switch (page) {
             case CYCLES:
+              clearPresetValues();
               page = CHOOSE;
               break;
             case TEMP:
@@ -276,6 +303,8 @@ void loop() {
             default:
               page--;
           }
+          break;
+        default:
           break;
       }
     }
@@ -318,6 +347,20 @@ void loop() {
   //   lastRefreshTime += REFRESH_INTERVAL;
   //   drawTemp();
   // }
+}
+
+//this is called after the NAME page is saved to clear the array for the next preset
+void clearPresetValues(){
+  totalCycles = 0;
+  for (int i = 0; i < NAME_SIZE; i++){
+    newName[i] = 0;
+  }
+  for(int i = 0; i < NUM_CYCLES; i++){  //starting after the value of the cycle total the user selected, count up to the max number of cycles as this is how much memory was allocated
+    for(int j = 0; j < VALUES_PER_CYCLE; j++){    //loop through the number of values per cycle 
+      presetValues[i*VALUES_PER_CYCLE+j] = 0;     //clear each value for each cycle that isnt being used
+    }
+  }
+
 }
 
 void saveElement(){
@@ -435,24 +478,41 @@ void saveElement(){
       break;
     case NAME:
       if(element <= NAME_SIZE){
-        newName[element-1] = rotValue+32;
+        newName[element-1] = rotValue-1+ASCII_OFFSET;
       }
-      if(element == elementLimit){
-        rotValue = newName[0]-32;
+      if(element == elementLimit){  //if we are on the last element, set the next element to 0
+        i = 0;
       } else {
-        rotValue = newName[element]-32;
+        i = element;
+      }
+
+      if((int)newName[i] < ASCII_OFFSET){
+        rotValue = DEFAULT_CHAR;
+      } else {
+        rotValue = newName[i]-ASCII_OFFSET+1;
       }
       break;
   }
 }
 
+void writePresetToFile() {
+  presetsFile = SD.open("PRESETS.TXT", FILE_WRITE);
+  presetsFile.println();
+  presetsFile.print(newName);
+  for(int i = 0; i < totalCycles; i++){  
+    for(int j = 0; j < VALUES_PER_CYCLE; j++){
+      presetsFile.print(',');
+      presetsFile.print(presetValues[i*VALUES_PER_CYCLE+j]);
+    }
+  }
+  presetsFile.close();
+}
+
+
 void readPresetsIntoArrays() {
 
   // Create or open the file.
-  presetsFile = SD.open("PRESETS.TXT",  O_READ | O_WRITE | O_CREAT);
-  if (!presetsFile) {
-    errorHalt("open failed");
-  }
+
 
   presetsNamesCount = readField(&presetsFile, presetsNames, NULL, NULL, (char*)",\n");
   // Serial.print("Name Size:");
@@ -475,12 +535,11 @@ void readPresetsIntoArrays() {
   // Print the array.
 
   // Serial.println("Done");
-  presetsFile.close();
 }
 
 //This function fills either the presetsNames with all the names it finds or vthe alues arrays with the values for the line matching the passed in "name" string
 //This assumes a CSV file with the name as the first value in the line, then up to NUM_CYCLES*VALUES_PER_CYCLE ints following.
-size_t readField(File* file, char presetsNames[][NAME_STRING_SIZE], char* name, int values[], char* delim) {
+size_t readField(File* file, char presetsNames[][NAME_STRING_SIZE], char* name, unsigned int values[], char* delim) {
   char ch;                                            //init temp character storage
   char str[NAME_STRING_SIZE];                                //init temp string storage
   int line = 1;                                       //init line counter for presetsNames array starts at 1 to leave room for the default preset
@@ -489,21 +548,30 @@ size_t readField(File* file, char presetsNames[][NAME_STRING_SIZE], char* name, 
   bool gotoNextLine = 0;
   bool thisLine = 0;
   char *ptr;                                          // Pointer for strtol used to test for valid number.
-  //Serial.println("In read file.");
+
+  presetsFile = SD.open("PRESETS.TXT",  O_READ | O_WRITE | O_CREAT);
+  if (!presetsFile) {
+    errorHalt("open failed");
+  }
+
+  // Serial.println("In read file.");
   presetsFile.seek(0);
 
   while(file->read(&ch, 1) == 1){
-    //Serial.println(ch);
+    // Serial.println(ch);
     if (ch == '\r') { continue; }                     //skip over carrage returns, they are not reliable newlines
     if(!gotoNextLine){
-      if((n + 2) > NAME_STRING_SIZE || strchr(delim, ch)) {  //if string size is full or we have reached a string deliminator then save the value
+      if((n + 2) > NAME_STRING_SIZE || strchr(delim, ch) || !presetsFile.available()) {  //if string size is full or we have reached a string deliminator or end of file then save the value
+        if(!presetsFile.available()) { //if its the end of file there is no deliminator to override so we must increment the counter to ensure we add the string terminator to the end of the string and not the last char of the string
+          n++;
+        }
         str[n] = '\0';                                //add string terminator
         n = 0;                                        //reset string size counter
-        //Serial.println(str);
+        // Serial.println(str);
         if(name == NULL) {                            //if name is not defined then we know we are looking for names not values
           //fill up presetsNames array
           strcpy(presetsNames[line], str);            //save string to presetsNames array
-          //Serial.println(presetsNames[line]);
+          // Serial.println(presetsNames[line]);
           gotoNextLine = 1;                           //set flag to skip to end of line so we are ready to capture the next name
           line++;                                     //increment line now in case the last line doesnt end in a newline
           if(line > NUM_PRESETS){                     //if we have reached the max number of presets (including the first default, hense > and not >=)
@@ -513,14 +581,23 @@ size_t readField(File* file, char presetsNames[][NAME_STRING_SIZE], char* name, 
         } else {
           if(thisLine){                               //if this is the line we want the values for (determined below)
             //fill up values array
+            //Serial.println(str);
             values[j] = strtol(str, &ptr, 10);        //convert string to long and store in int array
-            j++;                                      //increment value counter
+            // Serial.print("values: ");
+            // Serial.println(values[j]);
+            // Serial.print("j: ");
+            // Serial.println(j);
+            // Serial.print("max j: ");
+            // Serial.println(NUM_CYCLES*VALUES_PER_CYCLE);
             if(j >= (NUM_CYCLES*VALUES_PER_CYCLE) || ch == '\n'){    //exit if we have rerached the max number of values or the end of the values on this line
+              // Serial.print("Break! ");
+              // Serial.println(NUM_CYCLES*VALUES_PER_CYCLE);
               break;
             }
+            j++;                                      //increment value counter
           } else {
             if(strcmp(name, str) == 0){               //if name is set and name = str then this is the line we want the values from
-              //Serial.println("Name match!");
+              // Serial.println("Name match!");
               thisLine = 1;                           //set flag to capture values from now on (we don't need the name as it was passed in)
               continue;
             } else {
@@ -544,6 +621,7 @@ size_t readField(File* file, char presetsNames[][NAME_STRING_SIZE], char* name, 
       }
     }
   }
+  presetsFile.close();
   return max(line, j);                                //return size of the built array
 }
 
@@ -563,10 +641,12 @@ size_t readField(File* file, char presetsNames[][NAME_STRING_SIZE], char* name, 
 #define TITLE_TEXT_TOP_MARGIN 35
 #define TOP_TEXT_TOP_MARGIN 10
 #define ELEMENT_TEXT_TOP_MARGIN 100
-#define ELEMENT_UNDERLINE_GAP 8
+#define ELEMENT_UNDERLINE_GAP_5 8
+#define ELEMENT_UNDERLINE_GAP_4 5
 #define ELEMENT_UNDERLINE_WIDTH 55
 #define ELEMENT_UNDERLINE_HEIGHT 4
-#define ELEMENT_UNDERLINE_TOP_MARGIN ELEMENT_TEXT_TOP_MARGIN+CHAR_HEIGHT_5+ELEMENT_UNDERLINE_GAP
+#define ELEMENT_UNDERLINE_TOP_MARGIN_5 ELEMENT_TEXT_TOP_MARGIN+CHAR_HEIGHT_5+ELEMENT_UNDERLINE_GAP_5
+#define ELEMENT_UNDERLINE_TOP_MARGIN_4 ELEMENT_TEXT_TOP_MARGIN+CHAR_HEIGHT_4+ELEMENT_UNDERLINE_GAP_4
 #define TEMP_ELEMENT_TEXT_LEFT_MARGIN 65
 #define RAMP_ELEMENT_TEXT_LEFT_MARGIN 55
 
@@ -582,7 +662,9 @@ void changeScreen(){
   tft.setTextColor(ST77XX_BLACK);
   switch (selectedPreset) {
     case HOME:
-      rotValue = 1;
+      if(rotValue == 0){
+        rotValue = 1;
+      }
       rotLimit = presetsNamesCount;
       tft.fillTriangle(5, 85, 5, 105, 17, 95, ST77XX_BLACK);
       //draw buttons
@@ -612,7 +694,13 @@ void changeScreen(){
           drawTempScreen(back, next);
           break;
         case CYCLES:
-          rotValue = totalCycles;
+          if(totalCycles == 0){
+            drawButtons(back, next);
+            rotValue = 1;
+          } else {
+            drawButtons((char*)"Delete", next);
+            rotValue = totalCycles;
+          }
           rotLimit = NUM_CYCLES;
           tft.setTextSize(2);
           tft.setCursor(TITLE_TEXT_LEFT_MARGIN, TOP_TEXT_TOP_MARGIN);
@@ -621,7 +709,6 @@ void changeScreen(){
           tft.setTextSize(4);
           tft.setCursor(TITLE_TEXT_LEFT_MARGIN, TITLE_TEXT_TOP_MARGIN);
           tft.println("How many\n ramp/soak\n cycles?");
-          drawButtons(back, next);
           break;
         case RAMP:
           elementLimit = 2;
@@ -669,60 +756,32 @@ void changeScreen(){
         case SUMMARY:
           rotValue = 1;
           rotLimit = totalCycles;
-          tft.setTextSize(3);
-          tft.setCursor(TOP_TEXT_TOP_MARGIN, TOP_TEXT_TOP_MARGIN+5);
-          for(int i = 0; i < totalCycles; i++){
-            tft.print("Ramp:");
-            //print temperature for this cycle
-            tft.print(presetValues[i*VALUES_PER_CYCLE]>>1);
-            //print degree type for this cycle
-            if((presetValues[(i*VALUES_PER_CYCLE)] & 1)+1 == 2){
-              tft.print("C");
-            } else {
-              tft.print("F");
-            }
-            tft.print(":");
-            //print ramp time for this cycle
-            tmp = presetValues[i*VALUES_PER_CYCLE+1];
-            if(tmp/60){
-              tft.print(tmp/60);
-              tft.print("h");
-            }
-            if(tmp%60){
-              tft.print(tmp%60);
-              tft.println("m");
-            } else {
-              tft.println();
-            }
-            tft.setCursor(TOP_TEXT_TOP_MARGIN, tft.getCursorY());
-            tmp = presetValues[i*VALUES_PER_CYCLE+2];
-            if(tmp){
-              tft.print("Soak:");
-              //print soak time for this cycle
-              if(tmp/60){
-                tft.print(tmp/60);
-                tft.print("h");
-              }
-              if(tmp%60){
-                tft.print(tmp%60);
-                tft.println("m");
-              } else {
-                tft.println();
-              }
-              tft.setCursor(TOP_TEXT_TOP_MARGIN, tft.getCursorY());
-            }
-          }
+          drawSummary();
           drawButtons(edit, next);
           break;
         case NAME:
           elementLimit = NAME_SIZE;
-          rotLimit = 94; //number of characters in the ascii table that are standard printable characters
-          // if(newName[0] == ""){
-          //   rotValue = 97-32; // letter 'a' is 97 and the starting character ' ' is 32 so if we want to start at 'a' we need the rotValue of 97-32 
-          // }
-          Serial.print("0 Char: ");
-          Serial.print(rotValue);
-          rotValue = newName[0]-32;
+          rotLimit = ASCII_LIMIT; //number of characters in the ascii table that are standard printable characters
+
+          // Serial.print("newName: ");
+          // Serial.println(newName);
+
+          // Serial.print("newName[0]:'");
+          // Serial.println((int)newName[0]);
+          // Serial.print("newName[0]:'");
+          // Serial.print((char)newName[0]);
+          // Serial.println("'");
+          // Serial.print("old rotValue:'");
+          // Serial.print(rotValue);
+          // Serial.println("'");
+          if((int)newName[0] > ASCII_OFFSET){
+            rotValue = newName[0]-ASCII_OFFSET+1;
+          } else {
+            rotValue = DEFAULT_CHAR;
+          }
+          // Serial.print("new rotValue:'");
+          // Serial.print(rotValue);
+          // Serial.println("'");
           tft.setTextSize(2);
           tft.setCursor(TITLE_TEXT_LEFT_MARGIN, TOP_TEXT_TOP_MARGIN);
           tft.print(totalCycles);
@@ -734,14 +793,134 @@ void changeScreen(){
           for(int i = 1; i < NAME_SIZE; i++){
             tft.setCursor(HOME_LIST_PADDING+(ONE_CHAR_WIDTH_4*i), ELEMENT_TEXT_TOP_MARGIN);
             tft.print(newName[i]);
-            tft.fillRect(HOME_LIST_PADDING+(ONE_CHAR_WIDTH_4*i), ELEMENT_UNDERLINE_TOP_MARGIN, CHAR_WIDTH_4, ELEMENT_UNDERLINE_HEIGHT, UNDERLINE_GREY);
+            tft.fillRect(HOME_LIST_PADDING+(ONE_CHAR_WIDTH_4*i), ELEMENT_UNDERLINE_TOP_MARGIN_4, CHAR_WIDTH_4, ELEMENT_UNDERLINE_HEIGHT, UNDERLINE_GREY);
           }
           drawButtons(back, (char*)"Save");
           break;
       }
       break;
+    default:
+      switch (page) {
+      case RUN_SUMMARY:
+        // Serial.println("In preset draw summary!");
+        // Serial.print("selectedPreset: ");
+        // Serial.println(selectedPreset);
+        // Serial.print("presetsNames[selectedPreset-1]: ");
+        // Serial.println(presetsNames[selectedPreset-1]);
+        presetValuesCount = readField(&presetsFile, NULL, presetsNames[selectedPreset-1], presetValues, (char*)",\n");
+        // Serial.print("Values Size: ");
+        // Serial.println(presetValuesCount);
+        // for (int i = 0; i < presetValuesCount; i++) {
+        //   Serial.print("Values[");
+        //   Serial.print(i);
+        //   Serial.print("]: ");
+        //   Serial.println(presetValues[i]);
+        // }
+        totalCycles = presetValuesCount/VALUES_PER_CYCLE;
+        // Serial.print("totalCycles: ");
+        // Serial.println(totalCycles);
+        elementLimit = 0;
+        drawSummary();
+        // Serial.print("elementLimit: ");
+        // Serial.println(elementLimit);
+        tmp = elementLimit-SCREEN_LINES_3;
+        // Serial.print("summary tmp: ");
+        // Serial.println(tmp);
+        if(tmp > 0){
+          rotValue = 1;
+          rotLimit = tmp;
+        } else {
+          rotValue = 0;
+          rotLimit = 0;
+        }
+        // Serial.print("rotLimit: ");
+        // Serial.println(rotLimit);
+        Serial.print("changeScreen page: ");
+        Serial.println(page);
+        drawButtons(back, run);
+        break;
+      }
+      break;
   }
   refreshScreen();
+}
+
+void drawSummary(int start = 0){
+  int tmp = 0;
+  int count = 0;
+  tft.setTextSize(3);
+  tft.setCursor(TOP_TEXT_TOP_MARGIN, TOP_TEXT_TOP_MARGIN+5);
+  // Serial.print("drawSummary totalCycles: ");
+  // Serial.println(totalCycles);
+  if(start == 0){
+    count++;
+    tft.print("Cycles:");
+    tft.println(totalCycles);
+  } else {
+    start--;
+  }
+  tft.setCursor(TOP_TEXT_TOP_MARGIN, tft.getCursorY()+8);
+  for(int i = 0; i < totalCycles; i++){
+    if(start == 0){
+      tft.print("Ramp:");
+      //print temperature for this cycle
+      tft.print(presetValues[i*VALUES_PER_CYCLE]>>1);
+      //print degree type for this cycle
+      if((presetValues[(i*VALUES_PER_CYCLE)] & 1)+1 == 2){
+        tft.print("C");
+      } else {
+        tft.print("F");
+      }
+      tft.print(":");
+      //print ramp time for this cycle
+      tmp = presetValues[i*VALUES_PER_CYCLE+1];
+      if(tmp/60){
+        tft.print(tmp/60);
+        tft.print("h");
+      }
+      if(tmp%60){
+        tft.print(tmp%60);
+        tft.println("m");
+      } else {
+        tft.println();
+      }
+      count++;
+      if(count > SCREEN_LINES_3){
+        break;
+      }
+    } else {
+      start--;
+    }
+    if(start == 0){
+      tft.setCursor(TOP_TEXT_TOP_MARGIN, tft.getCursorY());
+      tmp = presetValues[i*VALUES_PER_CYCLE+2];
+      if(tmp){
+        tft.print("Soak:");
+        //print soak time for this cycle
+        if(tmp/60){
+          tft.print(tmp/60);
+          tft.print("h");
+        }
+        if(tmp%60){
+          tft.print(tmp%60);
+          tft.println("m");
+        } else {
+          tft.println();
+        }
+        count++;
+        //TODO: this is real jacked up. We need to limit the lines printed but we also need to know the total number of lines so we can allow scrolling. I think this code needs to be pulled out and rethought.
+        if(count > SCREEN_LINES_3){
+          break;
+        }
+      }
+    } else {
+      start--;
+    }
+    tft.setCursor(TOP_TEXT_TOP_MARGIN, tft.getCursorY()+8);
+  }
+  if(elementLimit == 0){
+    elementLimit = count;
+  }
 }
 
 void drawTimeScreen(char* title, int currentValue,  char* leftButton, char* rightButton){
@@ -845,7 +1024,7 @@ void drawTemp() {
 
 void printCenteredDialText(char strings[][NAME_STRING_SIZE], byte length, int padding) {
   int j = 0;
-  for(int i = SCREEN_LINES; i > 0; i--){
+  for(int i = SCREEN_LINES_4; i > 0; i--){
     j = i-3+(rotValue-1);
     if(j < 0){
       j = length+j;
@@ -863,19 +1042,21 @@ void printCenteredDialText(char strings[][NAME_STRING_SIZE], byte length, int pa
 }
 
 void refreshScreen() {
-  //Serial.println("drawScreen!");
+  Serial.println("drawScreen!");
+  Serial.print("selectedPreset:");
+  Serial.println(selectedPreset);
   //tft.setFont(&FreeSansBold18pt7b);
   switch(selectedPreset){
     case HOME:
       //void fillRect(x0, y0, w, h, color);
-      tft.fillRect(25, 17, SCREEN_WIDTH-25, SCREEN_HEIGHT-17-50, ST77XX_WHITE);
+      tft.fillRect(25, 17, SCREEN_WIDTH-25, SCREEN_HEIGHT-17-BUTTON_HEIGHT, ST77XX_WHITE);
       tft.setTextSize(4);
       tft.setCursor(25, 17);
       printCenteredDialText(presetsNames, presetsNamesCount, HOME_LIST_PADDING);
       if(rotValue == 1){
         drawButtons(NULL, (char*)"New/Manual");
       } else {
-        drawButtons(edit, (char*)"Run");
+        drawButtons(edit, run);
       }
       //delay(1);
       break;
@@ -915,9 +1096,9 @@ void refreshScreen() {
                 tft.print(rotValue-1);
               }
               //void fillRect(x0, y0, w, h, color);
-              tft.fillRect(TEMP_ELEMENT_TEXT_LEFT_MARGIN, ELEMENT_UNDERLINE_TOP_MARGIN, ELEMENT_UNDERLINE_WIDTH, ELEMENT_UNDERLINE_HEIGHT, ST77XX_BLACK);
-              tft.fillRect(TEMP_ELEMENT_TEXT_LEFT_MARGIN+TWO_CHAR_WIDTH_5, ELEMENT_UNDERLINE_TOP_MARGIN, ELEMENT_UNDERLINE_WIDTH, ELEMENT_UNDERLINE_HEIGHT, UNDERLINE_GREY);
-              tft.fillRect(TEMP_ELEMENT_TEXT_LEFT_MARGIN+(TWO_CHAR_WIDTH_5*2), ELEMENT_UNDERLINE_TOP_MARGIN, ELEMENT_UNDERLINE_WIDTH, ELEMENT_UNDERLINE_HEIGHT, UNDERLINE_GREY);
+              tft.fillRect(TEMP_ELEMENT_TEXT_LEFT_MARGIN, ELEMENT_UNDERLINE_TOP_MARGIN_5, ELEMENT_UNDERLINE_WIDTH, ELEMENT_UNDERLINE_HEIGHT, ST77XX_BLACK);
+              tft.fillRect(TEMP_ELEMENT_TEXT_LEFT_MARGIN+TWO_CHAR_WIDTH_5, ELEMENT_UNDERLINE_TOP_MARGIN_5, ELEMENT_UNDERLINE_WIDTH, ELEMENT_UNDERLINE_HEIGHT, UNDERLINE_GREY);
+              tft.fillRect(TEMP_ELEMENT_TEXT_LEFT_MARGIN+(TWO_CHAR_WIDTH_5*2), ELEMENT_UNDERLINE_TOP_MARGIN_5, ELEMENT_UNDERLINE_WIDTH, ELEMENT_UNDERLINE_HEIGHT, UNDERLINE_GREY);
               break;
             case 2:
               rotLimit = 100;
@@ -929,9 +1110,9 @@ void refreshScreen() {
                 tft.print("0");
               }
               tft.print(rotValue-1);
-              tft.fillRect(TEMP_ELEMENT_TEXT_LEFT_MARGIN, ELEMENT_UNDERLINE_TOP_MARGIN, ELEMENT_UNDERLINE_WIDTH, ELEMENT_UNDERLINE_HEIGHT, UNDERLINE_GREY);
-              tft.fillRect(TEMP_ELEMENT_TEXT_LEFT_MARGIN+TWO_CHAR_WIDTH_5, ELEMENT_UNDERLINE_TOP_MARGIN, ELEMENT_UNDERLINE_WIDTH, ELEMENT_UNDERLINE_HEIGHT, ST77XX_BLACK);
-              tft.fillRect(TEMP_ELEMENT_TEXT_LEFT_MARGIN+(TWO_CHAR_WIDTH_5*2), ELEMENT_UNDERLINE_TOP_MARGIN, ELEMENT_UNDERLINE_WIDTH, ELEMENT_UNDERLINE_HEIGHT, UNDERLINE_GREY);
+              tft.fillRect(TEMP_ELEMENT_TEXT_LEFT_MARGIN, ELEMENT_UNDERLINE_TOP_MARGIN_5, ELEMENT_UNDERLINE_WIDTH, ELEMENT_UNDERLINE_HEIGHT, UNDERLINE_GREY);
+              tft.fillRect(TEMP_ELEMENT_TEXT_LEFT_MARGIN+TWO_CHAR_WIDTH_5, ELEMENT_UNDERLINE_TOP_MARGIN_5, ELEMENT_UNDERLINE_WIDTH, ELEMENT_UNDERLINE_HEIGHT, ST77XX_BLACK);
+              tft.fillRect(TEMP_ELEMENT_TEXT_LEFT_MARGIN+(TWO_CHAR_WIDTH_5*2), ELEMENT_UNDERLINE_TOP_MARGIN_5, ELEMENT_UNDERLINE_WIDTH, ELEMENT_UNDERLINE_HEIGHT, UNDERLINE_GREY);
               break;
             case 3:
               rotLimit = 2;
@@ -947,9 +1128,9 @@ void refreshScreen() {
               } else {
                 tft.println(" F");
               }
-              tft.fillRect(TEMP_ELEMENT_TEXT_LEFT_MARGIN, ELEMENT_UNDERLINE_TOP_MARGIN, ELEMENT_UNDERLINE_WIDTH, ELEMENT_UNDERLINE_HEIGHT, UNDERLINE_GREY);
-              tft.fillRect(TEMP_ELEMENT_TEXT_LEFT_MARGIN+TWO_CHAR_WIDTH_5, ELEMENT_UNDERLINE_TOP_MARGIN, ELEMENT_UNDERLINE_WIDTH, ELEMENT_UNDERLINE_HEIGHT, UNDERLINE_GREY);
-              tft.fillRect(TEMP_ELEMENT_TEXT_LEFT_MARGIN+(TWO_CHAR_WIDTH_5*2), ELEMENT_UNDERLINE_TOP_MARGIN, ELEMENT_UNDERLINE_WIDTH, ELEMENT_UNDERLINE_HEIGHT, ST77XX_BLACK);
+              tft.fillRect(TEMP_ELEMENT_TEXT_LEFT_MARGIN, ELEMENT_UNDERLINE_TOP_MARGIN_5, ELEMENT_UNDERLINE_WIDTH, ELEMENT_UNDERLINE_HEIGHT, UNDERLINE_GREY);
+              tft.fillRect(TEMP_ELEMENT_TEXT_LEFT_MARGIN+TWO_CHAR_WIDTH_5, ELEMENT_UNDERLINE_TOP_MARGIN_5, ELEMENT_UNDERLINE_WIDTH, ELEMENT_UNDERLINE_HEIGHT, UNDERLINE_GREY);
+              tft.fillRect(TEMP_ELEMENT_TEXT_LEFT_MARGIN+(TWO_CHAR_WIDTH_5*2), ELEMENT_UNDERLINE_TOP_MARGIN_5, ELEMENT_UNDERLINE_WIDTH, ELEMENT_UNDERLINE_HEIGHT, ST77XX_BLACK);
               break;
           }
           break;
@@ -966,8 +1147,8 @@ void refreshScreen() {
               }
               tft.print(rotValue-1);
               //void fillRect(x0, y0, w, h, color);
-              tft.fillRect(RAMP_ELEMENT_TEXT_LEFT_MARGIN, ELEMENT_UNDERLINE_TOP_MARGIN, ELEMENT_UNDERLINE_WIDTH, ELEMENT_UNDERLINE_HEIGHT, ST77XX_BLACK);
-              tft.fillRect(RAMP_ELEMENT_TEXT_LEFT_MARGIN+(TWO_CHAR_WIDTH_5*2), ELEMENT_UNDERLINE_TOP_MARGIN, ELEMENT_UNDERLINE_WIDTH, ELEMENT_UNDERLINE_HEIGHT, UNDERLINE_GREY);
+              tft.fillRect(RAMP_ELEMENT_TEXT_LEFT_MARGIN, ELEMENT_UNDERLINE_TOP_MARGIN_5, ELEMENT_UNDERLINE_WIDTH, ELEMENT_UNDERLINE_HEIGHT, ST77XX_BLACK);
+              tft.fillRect(RAMP_ELEMENT_TEXT_LEFT_MARGIN+(TWO_CHAR_WIDTH_5*2), ELEMENT_UNDERLINE_TOP_MARGIN_5, ELEMENT_UNDERLINE_WIDTH, ELEMENT_UNDERLINE_HEIGHT, UNDERLINE_GREY);
               break;
             case 2:
               rotLimit = 60;
@@ -977,31 +1158,39 @@ void refreshScreen() {
                 tft.print("0");
               }
               tft.print(rotValue-1);
-              tft.fillRect(RAMP_ELEMENT_TEXT_LEFT_MARGIN, ELEMENT_UNDERLINE_TOP_MARGIN, ELEMENT_UNDERLINE_WIDTH, ELEMENT_UNDERLINE_HEIGHT, UNDERLINE_GREY);
-              tft.fillRect(RAMP_ELEMENT_TEXT_LEFT_MARGIN+(TWO_CHAR_WIDTH_5*2), ELEMENT_UNDERLINE_TOP_MARGIN, ELEMENT_UNDERLINE_WIDTH, ELEMENT_UNDERLINE_HEIGHT, ST77XX_BLACK);
+              tft.fillRect(RAMP_ELEMENT_TEXT_LEFT_MARGIN, ELEMENT_UNDERLINE_TOP_MARGIN_5, ELEMENT_UNDERLINE_WIDTH, ELEMENT_UNDERLINE_HEIGHT, UNDERLINE_GREY);
+              tft.fillRect(RAMP_ELEMENT_TEXT_LEFT_MARGIN+(TWO_CHAR_WIDTH_5*2), ELEMENT_UNDERLINE_TOP_MARGIN_5, ELEMENT_UNDERLINE_WIDTH, ELEMENT_UNDERLINE_HEIGHT, ST77XX_BLACK);
               break;
           }
           break;
         case NAME:
           char tmp;
           tft.setTextSize(4);
+          // Serial.print("int newName[element]:");
+          // Serial.print((int)newName[element]);
+          // Serial.print("char newName[element]:'");
+          // Serial.print(newName[element]);
+          // Serial.println("'");
+          // Serial.print("rotValue:'");
+          // Serial.print(rotValue);
+          // Serial.println("'");
           switch (element){
             case 1:
               tft.fillRect(HOME_LIST_PADDING, ELEMENT_TEXT_TOP_MARGIN, CHAR_WIDTH_4, CHAR_HEIGHT_4, ST77XX_WHITE);
               tft.setCursor(HOME_LIST_PADDING, ELEMENT_TEXT_TOP_MARGIN);
-              tmp = rotValue+32;
+              tmp = rotValue-1+ASCII_OFFSET;
               tft.print(tmp);
               //void fillRect(x0, y0, w, h, color);
-              tft.fillRect(HOME_LIST_PADDING, ELEMENT_UNDERLINE_TOP_MARGIN, CHAR_WIDTH_4, ELEMENT_UNDERLINE_HEIGHT, ST77XX_BLACK);
-              tft.fillRect(HOME_LIST_PADDING+(ONE_CHAR_WIDTH_4*(NAME_SIZE-1)), ELEMENT_UNDERLINE_TOP_MARGIN, CHAR_WIDTH_4, ELEMENT_UNDERLINE_HEIGHT, UNDERLINE_GREY);
+              tft.fillRect(HOME_LIST_PADDING, ELEMENT_UNDERLINE_TOP_MARGIN_4, CHAR_WIDTH_4, ELEMENT_UNDERLINE_HEIGHT, ST77XX_BLACK);
+              tft.fillRect(HOME_LIST_PADDING+(ONE_CHAR_WIDTH_4*(NAME_SIZE-1)), ELEMENT_UNDERLINE_TOP_MARGIN_4, CHAR_WIDTH_4, ELEMENT_UNDERLINE_HEIGHT, UNDERLINE_GREY);
               break;
             default:
               tft.fillRect(HOME_LIST_PADDING+(ONE_CHAR_WIDTH_4*(element-1)), ELEMENT_TEXT_TOP_MARGIN, CHAR_WIDTH_4, CHAR_HEIGHT_4, ST77XX_WHITE);
               tft.setCursor(HOME_LIST_PADDING+(ONE_CHAR_WIDTH_4*(element-1)), ELEMENT_TEXT_TOP_MARGIN);
-              tmp = rotValue+32;
+              tmp = rotValue-1+ASCII_OFFSET;
               tft.print(tmp);
-              tft.fillRect(HOME_LIST_PADDING+(ONE_CHAR_WIDTH_4*(element-2)), ELEMENT_UNDERLINE_TOP_MARGIN, CHAR_WIDTH_4, ELEMENT_UNDERLINE_HEIGHT, UNDERLINE_GREY);
-              tft.fillRect(HOME_LIST_PADDING+(ONE_CHAR_WIDTH_4*(element-1)), ELEMENT_UNDERLINE_TOP_MARGIN, CHAR_WIDTH_4, ELEMENT_UNDERLINE_HEIGHT, ST77XX_BLACK);
+              tft.fillRect(HOME_LIST_PADDING+(ONE_CHAR_WIDTH_4*(element-2)), ELEMENT_UNDERLINE_TOP_MARGIN_4, CHAR_WIDTH_4, ELEMENT_UNDERLINE_HEIGHT, UNDERLINE_GREY);
+              tft.fillRect(HOME_LIST_PADDING+(ONE_CHAR_WIDTH_4*(element-1)), ELEMENT_UNDERLINE_TOP_MARGIN_4, CHAR_WIDTH_4, ELEMENT_UNDERLINE_HEIGHT, ST77XX_BLACK);
               break;
           }
           break;
@@ -1009,8 +1198,26 @@ void refreshScreen() {
       //delay(1);
       break;
     default:
-      tft.fillScreen(ST77XX_WHITE);
-      tft.println(presetsNames[selectedPreset-1]);
+      Serial.println("refresh default!");
+      Serial.print("page:");
+      Serial.println(page);
+      switch (page) {
+        case RUN_SUMMARY:
+          //void fillRect(x0, y0, w, h, color);
+          tft.fillRect(25, 17, SCREEN_WIDTH-25, SCREEN_HEIGHT-17-BUTTON_HEIGHT, ST77XX_WHITE);
+          Serial.print("refresh default summary! rotValue:");
+          Serial.println(rotValue);
+          if(rotLimit == 0){
+            drawSummary();
+          } else {
+            drawSummary(rotValue);
+          }
+          //delay(1);
+          break;
+        case RUN:
+          break;
+
+      }
       break;
   }
   //void fillTriangle(x0, y0, x1, y1, x2, y2, color);
@@ -1021,7 +1228,7 @@ void rotate() {
   unsigned char result = rotary.process();
 
   if (result == DIR_CCW) {
-    // Serial.println("Clockwise!");
+    // Serial.println("Counter-clockwise!");
     // Serial.print("pre-rotLimit:");
     // Serial.println(rotLimit);
     // Serial.print("pre-rotValue:");
@@ -1041,7 +1248,7 @@ void rotate() {
     refreshScreen();
 
   } else if (result == DIR_CW) {
-    // Serial.println("Counter-clockwise!");
+    // Serial.println("Clockwise!");
     // Serial.print("pre-rotLimit:");
     // Serial.println(rotLimit);
     // Serial.print("pre-rotValue:");
